@@ -1,0 +1,12 @@
+[project]
+name = "lt-pmxt-scraper"
+version = "0.1.0"
+description = "Scrape and download Polymarket parquet files from archive.pmxt.dev"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "scrapling[fetchers]>=0.4.5",
+]
+
+[project.scripts]
+lt-pmxt-scraper = "scraper:main"
