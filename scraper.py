@@ -141,12 +141,31 @@ def download_file(url: str, dest: Path, label: str = "") -> None:
 def main():
     parser = argparse.ArgumentParser(description="Scrape and download Polymarket parquet files")
     parser.add_argument("--auto", action="store_true", help="Skip confirmation and start downloading immediately")
+    parser.add_argument("--monitor", action="store_true", help="Keep running and periodically check for new files")
     args = parser.parse_args()
 
     config = load_config()
     download_dir = get_download_dir(config)
     download_dir.mkdir(parents=True, exist_ok=True)
-    max_workers = config.get("max_concurrent_downloads", 1)
+    max_workers = config["max_concurrent_downloads"]
+    monitor_interval = config["monitor_interval_minutes"]
+
+    if args.monitor:
+        print(f"Monitor mode: checking every {monitor_interval} minutes (Ctrl+C to stop)")
+        while True:
+            _run_once(download_dir, max_workers, auto=True)
+            print(f"\nNext check in {monitor_interval} minutes...")
+            try:
+                time.sleep(monitor_interval * 60)
+            except KeyboardInterrupt:
+                print("\nMonitor stopped.")
+                return
+    else:
+        _run_once(download_dir, max_workers, auto=args.auto)
+
+
+def _run_once(download_dir: Path, max_workers: int, *, auto: bool) -> None:
+    """Scan for new files and download them."""
     downloaded = load_manifest()
 
     print(f"Already downloaded: {len(downloaded)} files")
@@ -192,8 +211,8 @@ def main():
     print(f"  Data to download:       {format_size(new_size)}")
     print("=" * 60)
 
-    # Prompt user to confirm (unless --auto)
-    if not args.auto:
+    # Prompt user to confirm (unless auto)
+    if not auto:
         try:
             answer = input("\nProceed with download? [y/N]: ").strip().lower()
             if answer not in ("y", "yes"):

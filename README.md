@@ -16,12 +16,13 @@ uv sync
 
 ## Configuration
 
-Edit `config.json` to set the download directory:
+Edit `config.json` to configure the scraper. All settings are required:
 
 ```json
 {
   "download_dir": "downloads",
-  "max_concurrent_downloads": 1
+  "max_concurrent_downloads": 1,
+  "monitor_interval_minutes": 30
 }
 ```
 
@@ -29,6 +30,7 @@ Edit `config.json` to set the download directory:
 |---|---|---|
 | `download_dir` | `"downloads"` | Absolute or relative path (resolved from the project directory) |
 | `max_concurrent_downloads` | `1` | Number of files to download simultaneously |
+| `monitor_interval_minutes` | `30` | How often `--monitor` rechecks for new files (in minutes) |
 
 ## Usage
 
@@ -42,14 +44,20 @@ Use `--auto` to skip the confirmation prompt and start downloading immediately:
 uv run python scraper.py --auto
 ```
 
+Use `--monitor` to keep the scraper running and periodically check for new files:
+
+```bash
+uv run python scraper.py --monitor
+```
+
 The scraper will:
 
 1. Scan all pages on the archive site
 2. Collect every `.parquet` file link and its size
 3. Compare against `downloaded.json` to find new files
 4. Show a download summary with total size
-5. Ask for confirmation before downloading (unless `--auto`)
-6. Download files one at a time with a progress indicator
+5. Ask for confirmation before downloading (unless `--auto` or `--monitor`)
+6. Download files using the configured number of concurrent workers
 
 The manifest (`downloaded.json`) is saved after each successful download, so interrupted runs pick up where they left off.
 

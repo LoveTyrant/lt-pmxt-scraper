@@ -1,4 +1,5 @@
 {
   "download_dir": "downloads",
-  "max_concurrent_downloads": 1
+  "max_concurrent_downloads": 1,
+  "monitor_interval_minutes": 30
 }
