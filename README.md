@@ -20,11 +20,15 @@ Edit `config.json` to set the download directory:
 
 ```json
 {
-  "download_dir": "downloads"
+  "download_dir": "downloads",
+  "max_concurrent_downloads": 1
 }
 ```
 
-Accepts absolute paths or relative paths (resolved from the project directory).
+| Key | Default | Description |
+|---|---|---|
+| `download_dir` | `"downloads"` | Absolute or relative path (resolved from the project directory) |
+| `max_concurrent_downloads` | `1` | Number of files to download simultaneously |
 
 ## Usage
 

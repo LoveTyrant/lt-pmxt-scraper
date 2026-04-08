@@ -2,7 +2,9 @@ import argparse
 import json
 import re
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from scrapling.fetchers import Fetcher
@@ -18,8 +20,7 @@ def load_config() -> dict:
         return json.load(f)
 
 
-def get_download_dir() -> Path:
-    config = load_config()
+def get_download_dir(config: dict) -> Path:
     download_dir = Path(config["download_dir"])
     if not download_dir.is_absolute():
         download_dir = PROJECT_DIR / download_dir
@@ -102,10 +103,11 @@ def scrape_parquet_links(page) -> list[tuple[str, str, float]]:
     return links
 
 
-def download_file(url: str, dest: Path) -> None:
+def download_file(url: str, dest: Path, label: str = "") -> None:
     """Download a file with progress indication using streaming."""
     import urllib.request
 
+    prefix = f"  [{label}]" if label else " "
     tmp = dest.with_suffix(".tmp")
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -124,7 +126,7 @@ def download_file(url: str, dest: Path) -> None:
                         mb_down = downloaded / (1024 * 1024)
                         mb_total = total / (1024 * 1024)
                         print(
-                            f"\r  {mb_down:.1f}/{mb_total:.1f} MB ({pct:.1f}%)",
+                            f"\r{prefix} {mb_down:.1f}/{mb_total:.1f} MB ({pct:.1f}%)",
                             end="",
                             flush=True,
                         )
@@ -141,8 +143,10 @@ def main():
     parser.add_argument("--auto", action="store_true", help="Skip confirmation and start downloading immediately")
     args = parser.parse_args()
 
-    download_dir = get_download_dir()
+    config = load_config()
+    download_dir = get_download_dir(config)
     download_dir.mkdir(parents=True, exist_ok=True)
+    max_workers = config.get("max_concurrent_downloads", 1)
     downloaded = load_manifest()
 
     print(f"Already downloaded: {len(downloaded)} files")
@@ -201,19 +205,36 @@ def main():
 
     # Download new files
     downloaded_count = 0
-    for i, (url, filename, size) in enumerate(new_links, 1):
+    manifest_lock = threading.Lock()
+
+    def _download_one(index: int, url: str, filename: str, size: float) -> bool:
+        nonlocal downloaded_count
         dest = download_dir / filename
         size_str = f" ({format_size(size)})" if size else ""
-        print(f"\n[{i}/{len(new_links)}] Downloading {filename}{size_str}")
+        label = f"{index}/{len(new_links)}"
+        print(f"\n[{label}] Downloading {filename}{size_str}")
         try:
-            download_file(url, dest)
-            downloaded.add(filename)
-            save_manifest(downloaded)
-            downloaded_count += 1
-            print(f"  Saved to {dest}")
+            download_file(url, dest, label=label)
+            with manifest_lock:
+                downloaded.add(filename)
+                save_manifest(downloaded)
+                downloaded_count += 1
+            print(f"  [{label}] Saved to {dest}")
+            return True
         except Exception as e:
-            print(f"  ERROR downloading {filename}: {e}", file=sys.stderr)
-            continue
+            print(f"  [{label}] ERROR downloading {filename}: {e}", file=sys.stderr)
+            return False
+
+    if max_workers > 1:
+        print(f"\nDownloading with {max_workers} concurrent workers...")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(_download_one, i, url, name, size): name
+            for i, (url, name, size) in enumerate(new_links, 1)
+        }
+        for future in as_completed(futures):
+            future.result()  # propagate any unexpected exceptions
 
     print(f"\nDone! Downloaded {downloaded_count} new files.")
     print(f"Total files tracked: {len(downloaded)}")
