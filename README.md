@@ -70,3 +70,15 @@ The manifest (`downloaded.json`) is saved after each successful download, so int
 | `config.json` | Your local download directory configuration (git-ignored) |
 | `downloaded.json` | Manifest of already-downloaded files (auto-generated, git-ignored) |
 | `pyproject.toml` | Project metadata and dependencies |
+
+## Disclaimer
+
+This tool is provided as-is for personal and research use. It is not affiliated
+with, endorsed by, or sponsored by Polymarket or archive.pmxt.dev.
+
+Users are solely responsible for ensuring their use of this tool complies with
+all applicable laws, regulations, and third-party terms of service. The authors
+assume no responsibility or liability for any data loss, inaccuracies, service
+disruptions, or other consequences arising from the use of this software.
+
+Use at your own risk. See [LICENSE.txt](LICENSE.txt) for full terms.
