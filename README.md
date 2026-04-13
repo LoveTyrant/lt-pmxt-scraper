@@ -50,16 +50,27 @@ Use `--monitor` to keep the scraper running and periodically check for new files
 uv run python scraper.py --monitor
 ```
 
+Use `--reverify` to check all downloaded files against the server's expected file sizes. This sends a HEAD request for each file in the manifest and deletes any local files that don't match:
+
+```bash
+uv run python scraper.py --reverify
+```
+
 The scraper will:
 
-1. Scan all pages on the archive site
-2. Collect every `.parquet` file link and its size
-3. Compare against `downloaded.json` to find new files
-4. Show a download summary with total size
-5. Ask for confirmation before downloading (unless `--auto` or `--monitor`)
-6. Download files using the configured number of concurrent workers
+1. Verify existing downloads against expected file sizes (delete and requeue any mismatches)
+2. Scan all pages on the archive site
+3. Collect every `.parquet` file link and its size
+4. Compare against `downloaded.json` to find new files
+5. Show a download summary with new files, redownloads, and total size
+6. Ask for confirmation before downloading (unless `--auto` or `--monitor`)
+7. Download files using the configured number of concurrent workers
 
-The manifest (`downloaded.json`) is saved after each successful download, so interrupted runs pick up where they left off.
+## Download integrity
+
+The manifest (`downloaded.json`) tracks each file's expected size (from the server's `Content-Length` header). On every run, local files are checked against their expected sizes. If a file is missing or has a size mismatch (e.g. from an interrupted download), it is deleted and redownloaded automatically.
+
+For existing manifest entries that predate this feature, run `--reverify` once to backfill the expected sizes from the server.
 
 ## Files
 
