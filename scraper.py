@@ -27,18 +27,24 @@ def get_download_dir(config: dict) -> Path:
     return download_dir
 
 
-def load_manifest() -> set[str]:
-    """Load the set of already-downloaded filenames."""
+def load_manifest() -> dict[str, int]:
+    """Load the manifest of downloaded files mapping filename to size in bytes.
+
+    Handles the legacy format (list of filenames) by assigning size 0.
+    """
     if MANIFEST_FILE.exists():
         with open(MANIFEST_FILE, "r") as f:
-            return set(json.load(f))
-    return set()
+            data = json.load(f)
+        if isinstance(data, list):
+            return {name: 0 for name in data}
+        return data
+    return {}
 
 
-def save_manifest(downloaded: set[str]) -> None:
-    """Persist the set of downloaded filenames."""
+def save_manifest(downloaded: dict[str, int]) -> None:
+    """Persist the manifest of downloaded files."""
     with open(MANIFEST_FILE, "w") as f:
-        json.dump(sorted(downloaded), f, indent=2)
+        json.dump(dict(sorted(downloaded.items())), f, indent=2)
 
 
 def get_total_pages(page) -> int:
@@ -103,8 +109,8 @@ def scrape_parquet_links(page) -> list[tuple[str, str, float]]:
     return links
 
 
-def download_file(url: str, dest: Path, label: str = "") -> None:
-    """Download a file with progress indication using streaming."""
+def download_file(url: str, dest: Path, label: str = "") -> int:
+    """Download a file with progress indication using streaming. Returns expected size."""
     import urllib.request
 
     prefix = f"  [{label}]" if label else " "
@@ -132,16 +138,71 @@ def download_file(url: str, dest: Path, label: str = "") -> None:
                         )
             print()
         tmp.rename(dest)
+        return total
     except Exception:
         if tmp.exists():
             tmp.unlink()
         raise
 
 
+def reverify_manifest(download_dir: Path) -> None:
+    """Fetch Content-Length via HEAD requests for all manifest entries and update sizes.
+
+    Deletes local files that don't match the expected size.
+    """
+    import urllib.request
+
+    downloaded = load_manifest()
+    if not downloaded:
+        print("Manifest is empty, nothing to reverify.")
+        return
+
+    print(f"Reverifying {len(downloaded)} files against server...")
+    bad_files = []
+    updated = 0
+
+    for i, filename in enumerate(list(downloaded), 1):
+        url = f"{BASE_URL}/{filename}"
+        print(f"\r  [{i}/{len(downloaded)}] Checking {filename}...", end="", flush=True)
+        try:
+            req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req) as resp:
+                expected_size = int(resp.headers.get("Content-Length", 0))
+        except Exception as e:
+            print(f"\n  WARNING: Could not fetch size for {filename}: {e}")
+            continue
+
+        if expected_size == 0:
+            continue
+
+        if downloaded[filename] != expected_size:
+            downloaded[filename] = expected_size
+            updated += 1
+
+        local_path = download_dir / filename
+        if local_path.exists() and local_path.stat().st_size != expected_size:
+            bad_files.append((filename, f"expected {format_size(expected_size)}, got {format_size(local_path.stat().st_size)}"))
+            local_path.unlink()
+            del downloaded[filename]
+
+    print()
+    if updated:
+        print(f"Updated {updated} manifest entries with correct sizes.")
+    if bad_files:
+        print(f"Deleted {len(bad_files)} bad file(s):")
+        for filename, reason in bad_files:
+            print(f"  - {filename} ({reason})")
+    if not updated and not bad_files:
+        print("All files verified OK.")
+
+    save_manifest(downloaded)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Scrape and download Polymarket parquet files")
     parser.add_argument("--auto", action="store_true", help="Skip confirmation and start downloading immediately")
     parser.add_argument("--monitor", action="store_true", help="Keep running and periodically check for new files")
+    parser.add_argument("--reverify", action="store_true", help="Fetch expected sizes from server via HEAD requests and update manifest")
     args = parser.parse_args()
 
     config = load_config()
@@ -149,6 +210,10 @@ def main():
     download_dir.mkdir(parents=True, exist_ok=True)
     max_workers = config["max_concurrent_downloads"]
     monitor_interval = config["monitor_interval_minutes"]
+
+    if args.reverify:
+        reverify_manifest(download_dir)
+        return
 
     if args.monitor:
         print(f"Monitor mode: checking every {monitor_interval} minutes (Ctrl+C to stop)")
@@ -164,9 +229,44 @@ def main():
         _run_once(download_dir, max_workers, auto=args.auto)
 
 
+def verify_downloads(downloaded: dict[str, int], download_dir: Path) -> tuple[dict[str, int], int]:
+    """Verify local files match their recorded sizes. Remove mismatches."""
+    bad_files = []
+    updated = False
+    for filename, expected_size in list(downloaded.items()):
+        local_path = download_dir / filename
+        if not local_path.exists():
+            bad_files.append((filename, "missing"))
+            continue
+        if expected_size == 0:
+            actual_size = local_path.stat().st_size
+            if actual_size > 0:
+                downloaded[filename] = actual_size
+                updated = True
+            continue
+        actual_size = local_path.stat().st_size
+        if actual_size != expected_size:
+            bad_files.append((filename, f"expected {format_size(expected_size)}, got {format_size(actual_size)}"))
+            local_path.unlink()
+
+    if bad_files:
+        print(f"Found {len(bad_files)} bad/missing file(s):")
+        for filename, reason in bad_files:
+            print(f"  - {filename} ({reason})")
+        for filename, _ in bad_files:
+            del downloaded[filename]
+        updated = True
+
+    if updated:
+        save_manifest(downloaded)
+
+    return downloaded, len(bad_files)
+
+
 def _run_once(download_dir: Path, max_workers: int, *, auto: bool) -> None:
     """Scan for new files and download them."""
     downloaded = load_manifest()
+    downloaded, redownload_count = verify_downloads(downloaded, download_dir)
 
     print(f"Already downloaded: {len(downloaded)} files")
     print(f"Fetching page 1 to determine total pages...")
@@ -205,10 +305,12 @@ def _run_once(download_dir: Path, max_workers: int, *, auto: bool) -> None:
     print("\n" + "=" * 60)
     print("DOWNLOAD SUMMARY")
     print("=" * 60)
+    new_count = len(new_links) - redownload_count
     print(f"  Total files on site:    {total_files} ({format_size(total_size)})")
     print(f"  Already downloaded:     {len(downloaded)}")
-    print(f"  Files to download:      {len(new_links)}")
-    print(f"  Data to download:       {format_size(new_size)}")
+    print(f"  New files:              {new_count}")
+    print(f"  Redownloading (bad):    {redownload_count}")
+    print(f"  Total to download:      {len(new_links)} ({format_size(new_size)})")
     print("=" * 60)
 
     # Prompt user to confirm (unless auto)
@@ -233,9 +335,9 @@ def _run_once(download_dir: Path, max_workers: int, *, auto: bool) -> None:
         label = f"{index}/{len(new_links)}"
         print(f"\n[{label}] Downloading {filename}{size_str}")
         try:
-            download_file(url, dest, label=label)
+            expected_size = download_file(url, dest, label=label)
             with manifest_lock:
-                downloaded.add(filename)
+                downloaded[filename] = expected_size or dest.stat().st_size
                 save_manifest(downloaded)
                 downloaded_count += 1
             print(f"  [{label}] Saved to {dest}")
