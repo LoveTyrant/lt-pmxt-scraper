@@ -1,10 +1,10 @@
 # lt-pmxt-scraper
 
-Scrapes and downloads Polymarket orderbook `.parquet` files from [archive.pmxt.dev](https://archive.pmxt.dev/Polymarket?page=1).
+Scrapes and downloads Polymarket orderbook `.parquet` files from [archive.pmxt.dev](https://archive.pmxt.dev/Polymarket/v1?page=1).
 
 Supports both dataset versions published by the archive:
 
-- **v1** — the original dump at [archive.pmxt.dev/Polymarket](https://archive.pmxt.dev/Polymarket?page=1)
+- **v1** — the original dump at [archive.pmxt.dev/Polymarket/v1](https://archive.pmxt.dev/Polymarket/v1?page=1)
 - **v2** — the newer dump at [archive.pmxt.dev/Polymarket/v2](https://archive.pmxt.dev/Polymarket/v2?page=1)
 
 Tracks previously downloaded files per version so subsequent runs only grab new ones.
@@ -90,7 +90,7 @@ The archive publishes two parallel datasets. The scraper treats them as independ
 
 | Version | Archive URL | Download location | Manifest |
 |---|---|---|---|
-| `v1` (default) | `https://archive.pmxt.dev/Polymarket` | `download_dir/` | `downloaded.json` |
+| `v1` (default) | `https://archive.pmxt.dev/Polymarket/v1` | `download_dir/` | `downloaded.json` |
 | `v2` | `https://archive.pmxt.dev/Polymarket/v2` | `download_dir/v2/` | `downloaded_v2.json` |
 
 Notes:

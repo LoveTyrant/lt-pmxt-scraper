@@ -16,7 +16,7 @@ SUPPORTED_VERSIONS = ("v1", "v2")
 
 def get_base_url(version: str) -> str:
     """Return the archive URL for the requested dataset version."""
-    return ROOT_URL if version == "v1" else f"{ROOT_URL}/{version}"
+    return f"{ROOT_URL}/{version}"
 
 
 def get_manifest_file(version: str) -> Path:
