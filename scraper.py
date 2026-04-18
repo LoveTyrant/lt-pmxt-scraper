@@ -9,9 +9,24 @@ from pathlib import Path
 
 from scrapling.fetchers import Fetcher
 
-BASE_URL = "https://archive.pmxt.dev/Polymarket"
+ROOT_URL = "https://archive.pmxt.dev/Polymarket"
 PROJECT_DIR = Path(__file__).parent
-MANIFEST_FILE = PROJECT_DIR / "downloaded.json"
+SUPPORTED_VERSIONS = ("v1", "v2")
+
+
+def get_base_url(version: str) -> str:
+    """Return the archive URL for the requested dataset version."""
+    return ROOT_URL if version == "v1" else f"{ROOT_URL}/{version}"
+
+
+def get_manifest_file(version: str) -> Path:
+    """Return the manifest path for the requested dataset version.
+
+    v1 uses the legacy ``downloaded.json`` filename for backward compatibility.
+    """
+    if version == "v1":
+        return PROJECT_DIR / "downloaded.json"
+    return PROJECT_DIR / f"downloaded_{version}.json"
 
 
 def load_config() -> dict:
@@ -20,20 +35,28 @@ def load_config() -> dict:
         return json.load(f)
 
 
-def get_download_dir(config: dict) -> Path:
+def get_download_dir(config: dict, version: str) -> Path:
+    """Resolve the download directory for the requested dataset version.
+
+    v1 writes directly to the configured directory (preserving existing layouts);
+    newer versions get a dedicated subdirectory so their files can't collide.
+    """
     download_dir = Path(config["download_dir"])
     if not download_dir.is_absolute():
         download_dir = PROJECT_DIR / download_dir
+    if version != "v1":
+        download_dir = download_dir / version
     return download_dir
 
 
-def load_manifest() -> dict[str, int]:
+def load_manifest(version: str) -> dict[str, int]:
     """Load the manifest of downloaded files mapping filename to size in bytes.
 
     Handles the legacy format (list of filenames) by assigning size 0.
     """
-    if MANIFEST_FILE.exists():
-        with open(MANIFEST_FILE, "r") as f:
+    manifest_file = get_manifest_file(version)
+    if manifest_file.exists():
+        with open(manifest_file, "r") as f:
             data = json.load(f)
         if isinstance(data, list):
             return {name: 0 for name in data}
@@ -41,9 +64,10 @@ def load_manifest() -> dict[str, int]:
     return {}
 
 
-def save_manifest(downloaded: dict[str, int]) -> None:
+def save_manifest(downloaded: dict[str, int], version: str) -> None:
     """Persist the manifest of downloaded files."""
-    with open(MANIFEST_FILE, "w") as f:
+    manifest_file = get_manifest_file(version)
+    with open(manifest_file, "w") as f:
         json.dump(dict(sorted(downloaded.items())), f, indent=2)
 
 
@@ -145,24 +169,25 @@ def download_file(url: str, dest: Path, label: str = "") -> int:
         raise
 
 
-def reverify_manifest(download_dir: Path) -> None:
+def reverify_manifest(download_dir: Path, version: str) -> None:
     """Fetch Content-Length via HEAD requests for all manifest entries and update sizes.
 
     Deletes local files that don't match the expected size.
     """
     import urllib.request
 
-    downloaded = load_manifest()
+    base_url = get_base_url(version)
+    downloaded = load_manifest(version)
     if not downloaded:
         print("Manifest is empty, nothing to reverify.")
         return
 
-    print(f"Reverifying {len(downloaded)} files against server...")
+    print(f"Reverifying {len(downloaded)} files against server ({version})...")
     bad_files = []
     updated = 0
 
     for i, filename in enumerate(list(downloaded), 1):
-        url = f"{BASE_URL}/{filename}"
+        url = f"{base_url}/{filename}"
         print(f"\r  [{i}/{len(downloaded)}] Checking {filename}...", end="", flush=True)
         try:
             req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "Mozilla/5.0"})
@@ -195,7 +220,7 @@ def reverify_manifest(download_dir: Path) -> None:
     if not updated and not bad_files:
         print("All files verified OK.")
 
-    save_manifest(downloaded)
+    save_manifest(downloaded, version)
 
 
 def main():
@@ -203,22 +228,32 @@ def main():
     parser.add_argument("--auto", action="store_true", help="Skip confirmation and start downloading immediately")
     parser.add_argument("--monitor", action="store_true", help="Keep running and periodically check for new files")
     parser.add_argument("--reverify", action="store_true", help="Fetch expected sizes from server via HEAD requests and update manifest")
+    parser.add_argument(
+        "--version",
+        choices=SUPPORTED_VERSIONS,
+        default="v1",
+        help="Which archive dataset version to download (default: v1)",
+    )
     args = parser.parse_args()
 
     config = load_config()
-    download_dir = get_download_dir(config)
+    version = args.version
+    download_dir = get_download_dir(config, version)
     download_dir.mkdir(parents=True, exist_ok=True)
     max_workers = config["max_concurrent_downloads"]
     monitor_interval = config["monitor_interval_minutes"]
 
+    print(f"Archive version: {version} ({get_base_url(version)})")
+    print(f"Download directory: {download_dir}")
+
     if args.reverify:
-        reverify_manifest(download_dir)
+        reverify_manifest(download_dir, version)
         return
 
     if args.monitor:
         print(f"Monitor mode: checking every {monitor_interval} minutes (Ctrl+C to stop)")
         while True:
-            _run_once(download_dir, max_workers, auto=True)
+            _run_once(download_dir, max_workers, version, auto=True)
             print(f"\nNext check in {monitor_interval} minutes...")
             try:
                 time.sleep(monitor_interval * 60)
@@ -226,10 +261,10 @@ def main():
                 print("\nMonitor stopped.")
                 return
     else:
-        _run_once(download_dir, max_workers, auto=args.auto)
+        _run_once(download_dir, max_workers, version, auto=args.auto)
 
 
-def verify_downloads(downloaded: dict[str, int], download_dir: Path) -> tuple[dict[str, int], int]:
+def verify_downloads(downloaded: dict[str, int], download_dir: Path, version: str) -> tuple[dict[str, int], int]:
     """Verify local files match their recorded sizes. Remove mismatches."""
     bad_files = []
     updated = False
@@ -258,20 +293,21 @@ def verify_downloads(downloaded: dict[str, int], download_dir: Path) -> tuple[di
         updated = True
 
     if updated:
-        save_manifest(downloaded)
+        save_manifest(downloaded, version)
 
     return downloaded, len(bad_files)
 
 
-def _run_once(download_dir: Path, max_workers: int, *, auto: bool) -> None:
+def _run_once(download_dir: Path, max_workers: int, version: str, *, auto: bool) -> None:
     """Scan for new files and download them."""
-    downloaded = load_manifest()
-    downloaded, redownload_count = verify_downloads(downloaded, download_dir)
+    base_url = get_base_url(version)
+    downloaded = load_manifest(version)
+    downloaded, redownload_count = verify_downloads(downloaded, download_dir, version)
 
     print(f"Already downloaded: {len(downloaded)} files")
     print(f"Fetching page 1 to determine total pages...")
 
-    page = Fetcher.get(f"{BASE_URL}?page=1")
+    page = Fetcher.get(f"{base_url}?page=1")
     total_pages = get_total_pages(page)
     print(f"Total pages: {total_pages}")
 
@@ -283,7 +319,7 @@ def _run_once(download_dir: Path, max_workers: int, *, auto: bool) -> None:
 
     for page_num in range(2, total_pages + 1):
         print(f"Scanning page {page_num}/{total_pages}...")
-        page = Fetcher.get(f"{BASE_URL}?page={page_num}")
+        page = Fetcher.get(f"{base_url}?page={page_num}")
         all_links.extend(scrape_parquet_links(page))
         time.sleep(0.5)
 
@@ -338,7 +374,7 @@ def _run_once(download_dir: Path, max_workers: int, *, auto: bool) -> None:
             expected_size = download_file(url, dest, label=label)
             with manifest_lock:
                 downloaded[filename] = expected_size or dest.stat().st_size
-                save_manifest(downloaded)
+                save_manifest(downloaded, version)
                 downloaded_count += 1
             print(f"  [{label}] Saved to {dest}")
             return True
