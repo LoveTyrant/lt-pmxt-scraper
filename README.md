@@ -11,7 +11,7 @@ Tracks previously downloaded files per version so subsequent runs only grab new 
 
 ## Setup
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
+Requires Python 3.14+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 cd lt-pmxt-scraper
