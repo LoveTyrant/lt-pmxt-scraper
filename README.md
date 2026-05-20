@@ -1,6 +1,6 @@
 # lt-pmxt-scraper
 
-Scrapes and downloads Polymarket orderbook `.parquet` files from [archive.pmxt.dev](https://archive.pmxt.dev/Polymarket/v1?page=1).
+Scrapes and downloads Polymarket orderbook `.parquet` files from [archive.pmxt.dev](https://archive.pmxt.dev/Polymarket/v2?page=1).
 
 Supports both dataset versions published by the archive:
 
@@ -61,17 +61,17 @@ Use `--reverify` to check all downloaded files against the server's expected fil
 uv run python scraper.py --reverify
 ```
 
-Use `--version` to pick which archive dataset to pull. Defaults to `v1`; pass `v2` for the newer dump:
+Use `--version` to pick which archive dataset to pull. Defaults to `v2`; pass `v1` for the original dump:
 
 ```bash
-uv run python scraper.py --version v2
+uv run python scraper.py --version v1
 ```
 
 See [Dataset versions](#dataset-versions) below for how v1 and v2 are kept separate on disk. `--version` combines with every other flag (`--auto`, `--monitor`, `--reverify`) — for example:
 
 ```bash
-uv run python scraper.py --version v2 --monitor
-uv run python scraper.py --version v2 --reverify
+uv run python scraper.py --version v1 --monitor
+uv run python scraper.py --version v1 --reverify
 ```
 
 The scraper will:
@@ -90,8 +90,8 @@ The archive publishes two parallel datasets. The scraper treats them as independ
 
 | Version | Archive URL | Download location | Manifest |
 |---|---|---|---|
-| `v1` (default) | `https://archive.pmxt.dev/Polymarket/v1` | `download_dir/` | `downloaded.json` |
-| `v2` | `https://archive.pmxt.dev/Polymarket/v2` | `download_dir/v2/` | `downloaded_v2.json` |
+| `v1` | `https://archive.pmxt.dev/Polymarket/v1` | `download_dir/` | `downloaded.json` |
+| `v2` (default) | `https://archive.pmxt.dev/Polymarket/v2` | `download_dir/v2/` | `downloaded_v2.json` |
 
 Notes:
 
@@ -106,8 +106,8 @@ The manifest for the selected version (`downloaded.json` for v1, `downloaded_v2.
 For existing manifest entries that predate this feature, run `--reverify` once per version to backfill the expected sizes from the server:
 
 ```bash
-uv run python scraper.py --reverify              # v1
-uv run python scraper.py --version v2 --reverify # v2
+uv run python scraper.py --reverify              # v2
+uv run python scraper.py --version v1 --reverify # v1
 ```
 
 ## Files

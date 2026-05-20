@@ -12,6 +12,7 @@ from scrapling.fetchers import Fetcher
 ROOT_URL = "https://archive.pmxt.dev/Polymarket"
 PROJECT_DIR = Path(__file__).parent
 SUPPORTED_VERSIONS = ("v1", "v2")
+DEFAULT_VERSION = "v2"
 
 
 def get_base_url(version: str) -> str:
@@ -231,8 +232,8 @@ def main():
     parser.add_argument(
         "--version",
         choices=SUPPORTED_VERSIONS,
-        default="v1",
-        help="Which archive dataset version to download (default: v1)",
+        default=DEFAULT_VERSION,
+        help=f"Which archive dataset version to download (default: {DEFAULT_VERSION})",
     )
     args = parser.parse_args()
 
