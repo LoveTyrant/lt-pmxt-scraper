@@ -3,6 +3,5 @@ __pycache__/
 *.pyc
 
 config.json
-downloaded.json
-downloaded_v2.json
+downloaded*.json
 downloads/

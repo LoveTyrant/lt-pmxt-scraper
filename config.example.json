@@ -1,5 +1,11 @@
 {
   "download_dir": "downloads",
+  "download_dirs": {
+    "polymarket": "downloads",
+    "kalshi": "downloads/kalshi",
+    "limitless": "downloads/limitless",
+    "opinion": "downloads/opinion"
+  },
   "max_concurrent_downloads": 1,
   "monitor_interval_minutes": 30
 }

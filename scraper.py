@@ -5,29 +5,119 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 from scrapling.fetchers import Fetcher
 
-ROOT_URL = "https://archive.pmxt.dev/Polymarket"
+ARCHIVE_ROOT = "https://archive.pmxt.dev"
 PROJECT_DIR = Path(__file__).parent
+
+
+@dataclass(frozen=True)
+class Source:
+    """A single downloadable dataset on the archive.
+
+    ``listing_url`` is the paginated HTML index that is scraped for links.
+    ``download_url`` is the R2 host the files actually live on; it is used to
+    reconstruct file URLs during reverify (the listing host does not return a
+    Content-Length, the R2 host does). ``manifest`` is the per-source manifest
+    filename.
+
+    Two subdirectories shape where files land (see ``get_download_dir``):
+    ``platform_subdir`` keeps platforms apart when they share a single
+    ``download_dir`` (it is skipped when the platform has its own override), and
+    ``version_subdir`` keeps Polymarket v1/v2 apart and always applies.
+    """
+
+    key: str
+    platform: str
+    listing_url: str
+    download_url: str
+    platform_subdir: str
+    version_subdir: str
+    manifest: str
+
+
+# Polymarket is versioned (v1/v2); the other platforms publish a single flat dataset.
+# v1 keeps the legacy root layout and ``downloaded.json`` manifest for backward compatibility.
+SOURCES: dict[str, Source] = {
+    "polymarket-v1": Source(
+        key="polymarket-v1",
+        platform="polymarket",
+        listing_url=f"{ARCHIVE_ROOT}/Polymarket/v1",
+        download_url="https://r2.pmxt.dev",
+        platform_subdir="",
+        version_subdir="",
+        manifest="downloaded.json",
+    ),
+    "polymarket-v2": Source(
+        key="polymarket-v2",
+        platform="polymarket",
+        listing_url=f"{ARCHIVE_ROOT}/Polymarket/v2",
+        download_url="https://r2v2.pmxt.dev",
+        platform_subdir="",
+        version_subdir="v2",
+        manifest="downloaded_v2.json",
+    ),
+    "kalshi": Source(
+        key="kalshi",
+        platform="kalshi",
+        listing_url=f"{ARCHIVE_ROOT}/Kalshi",
+        download_url="https://r2kalshi.pmxt.dev",
+        platform_subdir="kalshi",
+        version_subdir="",
+        manifest="downloaded_kalshi.json",
+    ),
+    "limitless": Source(
+        key="limitless",
+        platform="limitless",
+        listing_url=f"{ARCHIVE_ROOT}/Limitless",
+        download_url="https://r2limitless.pmxt.dev",
+        platform_subdir="limitless",
+        version_subdir="",
+        manifest="downloaded_limitless.json",
+    ),
+    "opinion": Source(
+        key="opinion",
+        platform="opinion",
+        listing_url=f"{ARCHIVE_ROOT}/Opinion",
+        download_url="https://r2opinion.pmxt.dev",
+        platform_subdir="opinion",
+        version_subdir="",
+        manifest="downloaded_opinion.json",
+    ),
+}
+
+PLATFORMS = ("polymarket", "kalshi", "limitless", "opinion")
+PLATFORM_CHOICES = (*PLATFORMS, "all")
 SUPPORTED_VERSIONS = ("v1", "v2")
 DEFAULT_VERSION = "v2"
+DEFAULT_PLATFORMS = ("polymarket",)
 
 
-def get_base_url(version: str) -> str:
-    """Return the archive URL for the requested dataset version."""
-    return f"{ROOT_URL}/{version}"
+def resolve_sources(platforms: list[str], version: str) -> list[Source]:
+    """Map selected platforms (and the Polymarket version) to Source objects.
 
-
-def get_manifest_file(version: str) -> Path:
-    """Return the manifest path for the requested dataset version.
-
-    v1 uses the legacy ``downloaded.json`` filename for backward compatibility.
+    Expands ``all``, applies ``version`` only to Polymarket, and de-duplicates
+    while preserving the order the platforms were requested in.
     """
-    if version == "v1":
-        return PROJECT_DIR / "downloaded.json"
-    return PROJECT_DIR / f"downloaded_{version}.json"
+    expanded: list[str] = []
+    for platform in platforms:
+        if platform == "all":
+            expanded.extend(PLATFORMS)
+        else:
+            expanded.append(platform)
+
+    sources: list[Source] = []
+    seen: set[str] = set()
+    for platform in expanded:
+        key = f"polymarket-{version}" if platform == "polymarket" else platform
+        if key in seen:
+            continue
+        seen.add(key)
+        sources.append(SOURCES[key])
+    return sources
 
 
 def load_config() -> dict:
@@ -36,26 +126,43 @@ def load_config() -> dict:
         return json.load(f)
 
 
-def get_download_dir(config: dict, version: str) -> Path:
-    """Resolve the download directory for the requested dataset version.
+def _resolve_dir(value: str) -> Path:
+    """Resolve a configured path, treating relative paths as project-relative."""
+    path = Path(value)
+    if not path.is_absolute():
+        path = PROJECT_DIR / path
+    return path
 
-    v1 writes directly to the configured directory (preserving existing layouts);
-    newer versions get a dedicated subdirectory so their files can't collide.
+
+def get_download_dir(config: dict, source: Source) -> Path:
+    """Resolve the download directory for a source.
+
+    By default everything hangs off the single ``download_dir``, with each
+    platform in its own subdirectory (Polymarket v1 stays at the root for the
+    pre-v2 layout, v2 in a ``v2/`` subdirectory). The optional ``download_dirs``
+    map overrides the base directory per platform (keyed by platform name:
+    ``polymarket``, ``kalshi``, ``limitless``, ``opinion``); an override is used
+    as-is without the platform subdirectory. The Polymarket v1/v2 split always
+    applies, even under an override, so their filenames cannot collide.
     """
-    download_dir = Path(config["download_dir"])
-    if not download_dir.is_absolute():
-        download_dir = PROJECT_DIR / download_dir
-    if version != "v1":
-        download_dir = download_dir / version
-    return download_dir
+    overrides = config.get("download_dirs", {})
+    if source.platform in overrides:
+        base = _resolve_dir(overrides[source.platform])
+    else:
+        base = _resolve_dir(config["download_dir"])
+        if source.platform_subdir:
+            base = base / source.platform_subdir
+    if source.version_subdir:
+        base = base / source.version_subdir
+    return base
 
 
-def load_manifest(version: str) -> dict[str, int]:
+def load_manifest(source: Source) -> dict[str, int]:
     """Load the manifest of downloaded files mapping filename to size in bytes.
 
     Handles the legacy format (list of filenames) by assigning size 0.
     """
-    manifest_file = get_manifest_file(version)
+    manifest_file = PROJECT_DIR / source.manifest
     if manifest_file.exists():
         with open(manifest_file, "r") as f:
             data = json.load(f)
@@ -65,9 +172,9 @@ def load_manifest(version: str) -> dict[str, int]:
     return {}
 
 
-def save_manifest(downloaded: dict[str, int], version: str) -> None:
+def save_manifest(downloaded: dict[str, int], source: Source) -> None:
     """Persist the manifest of downloaded files."""
-    manifest_file = get_manifest_file(version)
+    manifest_file = PROJECT_DIR / source.manifest
     with open(manifest_file, "w") as f:
         json.dump(dict(sorted(downloaded.items())), f, indent=2)
 
@@ -170,25 +277,24 @@ def download_file(url: str, dest: Path, label: str = "") -> int:
         raise
 
 
-def reverify_manifest(download_dir: Path, version: str) -> None:
+def reverify_manifest(source: Source, download_dir: Path) -> None:
     """Fetch Content-Length via HEAD requests for all manifest entries and update sizes.
 
     Deletes local files that don't match the expected size.
     """
     import urllib.request
 
-    base_url = get_base_url(version)
-    downloaded = load_manifest(version)
+    downloaded = load_manifest(source)
     if not downloaded:
         print("Manifest is empty, nothing to reverify.")
         return
 
-    print(f"Reverifying {len(downloaded)} files against server ({version})...")
+    print(f"Reverifying {len(downloaded)} files against server ({source.key})...")
     bad_files = []
     updated = 0
 
     for i, filename in enumerate(list(downloaded), 1):
-        url = f"{base_url}/{filename}"
+        url = f"{source.download_url}/{filename}"
         print(f"\r  [{i}/{len(downloaded)}] Checking {filename}...", end="", flush=True)
         try:
             req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "Mozilla/5.0"})
@@ -221,40 +327,57 @@ def reverify_manifest(download_dir: Path, version: str) -> None:
     if not updated and not bad_files:
         print("All files verified OK.")
 
-    save_manifest(downloaded, version)
+    save_manifest(downloaded, source)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Scrape and download Polymarket parquet files")
+    parser = argparse.ArgumentParser(description="Scrape and download prediction-market parquet files from archive.pmxt.dev")
     parser.add_argument("--auto", action="store_true", help="Skip confirmation and start downloading immediately")
     parser.add_argument("--monitor", action="store_true", help="Keep running and periodically check for new files")
     parser.add_argument("--reverify", action="store_true", help="Fetch expected sizes from server via HEAD requests and update manifest")
     parser.add_argument(
+        "--platform",
+        nargs="+",
+        choices=PLATFORM_CHOICES,
+        default=list(DEFAULT_PLATFORMS),
+        metavar="PLATFORM",
+        help=(
+            "Which platform(s) to download: "
+            f"{', '.join(PLATFORM_CHOICES)} (default: {' '.join(DEFAULT_PLATFORMS)}). "
+            "Pass several, or 'all' for every platform."
+        ),
+    )
+    parser.add_argument(
         "--version",
         choices=SUPPORTED_VERSIONS,
         default=DEFAULT_VERSION,
-        help=f"Which archive dataset version to download (default: {DEFAULT_VERSION})",
+        help=f"Polymarket archive dataset version (default: {DEFAULT_VERSION}); ignored for other platforms",
     )
     args = parser.parse_args()
 
     config = load_config()
-    version = args.version
-    download_dir = get_download_dir(config, version)
-    download_dir.mkdir(parents=True, exist_ok=True)
+    sources = resolve_sources(args.platform, args.version)
     max_workers = config["max_concurrent_downloads"]
     monitor_interval = config["monitor_interval_minutes"]
 
-    print(f"Archive version: {version} ({get_base_url(version)})")
-    print(f"Download directory: {download_dir}")
+    print(f"Selected: {', '.join(s.key for s in sources)}")
 
     if args.reverify:
-        reverify_manifest(download_dir, version)
+        for source in sources:
+            download_dir = get_download_dir(config, source)
+            print(f"\n=== {source.key} ===")
+            reverify_manifest(source, download_dir)
         return
 
     if args.monitor:
         print(f"Monitor mode: checking every {monitor_interval} minutes (Ctrl+C to stop)")
         while True:
-            _run_once(download_dir, max_workers, version, auto=True)
+            for source in sources:
+                download_dir = get_download_dir(config, source)
+                download_dir.mkdir(parents=True, exist_ok=True)
+                print(f"\n=== {source.key} ({source.listing_url}) ===")
+                print(f"Download directory: {download_dir}")
+                _run_once(source, download_dir, max_workers, auto=True)
             print(f"\nNext check in {monitor_interval} minutes...")
             try:
                 time.sleep(monitor_interval * 60)
@@ -262,10 +385,15 @@ def main():
                 print("\nMonitor stopped.")
                 return
     else:
-        _run_once(download_dir, max_workers, version, auto=args.auto)
+        for source in sources:
+            download_dir = get_download_dir(config, source)
+            download_dir.mkdir(parents=True, exist_ok=True)
+            print(f"\n=== {source.key} ({source.listing_url}) ===")
+            print(f"Download directory: {download_dir}")
+            _run_once(source, download_dir, max_workers, auto=args.auto)
 
 
-def verify_downloads(downloaded: dict[str, int], download_dir: Path, version: str) -> tuple[dict[str, int], int]:
+def verify_downloads(downloaded: dict[str, int], download_dir: Path, source: Source) -> tuple[dict[str, int], int]:
     """Verify local files match their recorded sizes. Remove mismatches."""
     bad_files = []
     updated = False
@@ -294,16 +422,16 @@ def verify_downloads(downloaded: dict[str, int], download_dir: Path, version: st
         updated = True
 
     if updated:
-        save_manifest(downloaded, version)
+        save_manifest(downloaded, source)
 
     return downloaded, len(bad_files)
 
 
-def _run_once(download_dir: Path, max_workers: int, version: str, *, auto: bool) -> None:
+def _run_once(source: Source, download_dir: Path, max_workers: int, *, auto: bool) -> None:
     """Scan for new files and download them."""
-    base_url = get_base_url(version)
-    downloaded = load_manifest(version)
-    downloaded, redownload_count = verify_downloads(downloaded, download_dir, version)
+    base_url = source.listing_url
+    downloaded = load_manifest(source)
+    downloaded, redownload_count = verify_downloads(downloaded, download_dir, source)
 
     print(f"Already downloaded: {len(downloaded)} files")
     print(f"Fetching page 1 to determine total pages...")
@@ -375,7 +503,7 @@ def _run_once(download_dir: Path, max_workers: int, version: str, *, auto: bool)
             expected_size = download_file(url, dest, label=label)
             with manifest_lock:
                 downloaded[filename] = expected_size or dest.stat().st_size
-                save_manifest(downloaded, version)
+                save_manifest(downloaded, source)
                 downloaded_count += 1
             print(f"  [{label}] Saved to {dest}")
             return True
